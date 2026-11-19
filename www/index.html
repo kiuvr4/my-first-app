@@ -371,22 +371,7 @@
   <!-- TOAST CONTAINER -->
   <div id="toast-container" class="fixed top-16 right-4 left-4 sm:left-auto sm:w-80 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import {
-      getAuth,
-      signInAnonymously,
-      signInWithCustomToken,
-      onAuthStateChanged
-    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import {
-      getFirestore,
-      doc,
-      getDoc,
-      setDoc,
-      onSnapshot
-    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
+  <script>
     const DEFAULT_SUBJECTS = [
       { id: 'subj_fisika', name: 'Fisika', color: '#B66878', icon: 'atom' },
       { id: 'subj_biologi', name: 'Biologi', color: '#C98895', icon: 'leaf' },
@@ -448,7 +433,7 @@
       };
     }
 
-    // Cloud Initialization
+    // Cloud Initialization (Dinamis agar tetap berjalan lancar di APK / WebView)
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'my-study-space-default';
     let firebaseConfig = null;
     try {
@@ -459,6 +444,7 @@
       firebaseConfig = null;
     }
 
+    let fbModules = null;
     let app = null;
     let auth = null;
     let db = null;
@@ -479,34 +465,64 @@
     let notesViewState = { selectedSubjectId: null, selectedTopicId: null, searchQuery: '' };
     let calendarViewState = { mode: 'month', cursorDate: getTodayStr() };
 
+    function safeRefreshIcons(rootNode) {
+      try {
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          if (rootNode) {
+            window.lucide.createIcons({ nodes: [rootNode] });
+          } else {
+            window.lucide.createIcons();
+          }
+        }
+      } catch (e) {}
+    }
+
     function setSyncStatus(status) {
       const pill = document.getElementById('cloud-sync-pill');
       if (!pill) return;
       if (status === 'saving') {
         pill.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-extrabold';
         pill.innerHTML = `<i data-lucide="refresh-cw" class="w-3 h-3 animate-spin"></i><span class="hidden md:inline">Menyimpan...</span>`;
+      } else if (status === 'local') {
+        pill.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-pinkbrand-50 text-pinkbrand-600 border border-pinkbrand-200 text-[10px] font-extrabold';
+        pill.innerHTML = `<i data-lucide="hard-drive" class="w-3 h-3"></i><span class="hidden md:inline">Offline APK</span>`;
       } else if (status === 'error') {
         pill.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-extrabold';
-        pill.innerHTML = `<i data-lucide="cloud-off" class="w-3 h-3"></i><span class="hidden md:inline">Gagal Sync</span>`;
+        pill.innerHTML = `<i data-lucide="cloud-off" class="w-3 h-3"></i><span class="hidden md:inline">Offline</span>`;
       } else {
         pill.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-extrabold';
         pill.innerHTML = `<i data-lucide="cloud-check" class="w-3 h-3"></i><span class="hidden md:inline">Tersimpan</span>`;
       }
-      lucide.createIcons({ nodes: [pill] });
+      safeRefreshIcons(pill);
     }
 
     function normalizeEmailKey(email) {
       return email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
     }
 
+    // Kompatibel di HTTPS maupun HTTP / file:// WebView APK
     async function hashPassword(password) {
-      const enc = new TextEncoder().encode(password + '::mystudyspace_salt');
-      const buf = await crypto.subtle.digest('SHA-256', enc);
-      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+      const text = password + '::mystudyspace_salt';
+      try {
+        if (window.crypto && window.crypto.subtle && window.isSecureContext) {
+          const enc = new TextEncoder().encode(text);
+          const buf = await crypto.subtle.digest('SHA-256', enc);
+          return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+      } catch (e) {}
+      let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+      }
+      h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+      h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+      return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
     }
 
     function getAccountDocRef(accountKey) {
-      return doc(db, 'artifacts', appId, 'public', 'data', 'study_space_accounts', accountKey);
+      return fbModules.doc(db, 'artifacts', appId, 'public', 'data', 'study_space_accounts', accountKey);
     }
 
     function saveLocalSessionCache() {
@@ -516,6 +532,21 @@
           localStorage.setItem('mss_backup_state_' + activeAccount.accountKey, JSON.stringify(appState));
         }
       } catch (e) {}
+    }
+
+    function saveLocalAccountRecord(accountKey, recordObj) {
+      try {
+        localStorage.setItem('mss_account_meta_' + accountKey, JSON.stringify(recordObj));
+      } catch (e) {}
+    }
+
+    function loadLocalAccountRecord(accountKey) {
+      try {
+        const raw = localStorage.getItem('mss_account_meta_' + accountKey);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
     }
 
     function loadLocalStateCache(accountKey) {
@@ -530,13 +561,16 @@
     async function persistStateToCloudNow() {
       if (!activeAccount || isRemoteUpdating) return;
       saveLocalSessionCache();
-      if (!db || !auth) return;
+      if (!db || !auth || !fbModules) {
+        setSyncStatus('local');
+        return;
+      }
       try {
         setSyncStatus('saving');
         const user = await ensureFirebaseAuth();
         if (!user) throw new Error('Belum terautentikasi');
         const payload = JSON.parse(JSON.stringify(appState));
-        await setDoc(getAccountDocRef(activeAccount.accountKey), {
+        await fbModules.setDoc(getAccountDocRef(activeAccount.accountKey), {
           state: payload,
           updatedAt: Date.now()
         }, { merge: true });
@@ -550,7 +584,10 @@
     function saveState(immediate = false) {
       if (!activeAccount) return;
       saveLocalSessionCache();
-      if (!db) return;
+      if (!db || !fbModules) {
+        setSyncStatus('local');
+        return;
+      }
       setSyncStatus('saving');
       clearTimeout(saveDebounceTimer);
       if (immediate) {
@@ -567,14 +604,14 @@
         unsubscribeSnapshot();
         unsubscribeSnapshot = null;
       }
-      if (!db || !auth) return;
+      if (!db || !auth || !fbModules) return;
       const user = await ensureFirebaseAuth();
       if (!user) return;
 
       hasLoadedInitialDoc = false;
       const docRef = getAccountDocRef(accountKey);
 
-      unsubscribeSnapshot = onSnapshot(docRef, (snap) => {
+      unsubscribeSnapshot = fbModules.onSnapshot(docRef, (snap) => {
         if (!snap.exists()) {
           if (!hasLoadedInitialDoc) {
             hasLoadedInitialDoc = true;
@@ -702,11 +739,11 @@
           <div class="relative flex justify-center"><span class="bg-white px-3 text-[11px] font-bold text-stone-400">atau</span></div>
         </div>
 
-        <button type="button" onclick="handleGuestLogin()" class="w-full py-2.5 rounded-2xl bg-pinkbrand-50 hover:bg-pinkbrand-100 text-pinkbrand-600 border border-pinkbrand-200 font-bold text-xs transition">
+        <button id="guest-login-btn" type="button" onclick="handleGuestLogin()" class="w-full py-2.5 rounded-2xl bg-pinkbrand-50 hover:bg-pinkbrand-100 text-pinkbrand-600 border border-pinkbrand-200 font-bold text-xs transition active:scale-95">
           Lanjutkan Cepat sebagai Tamu
         </button>
       `;
-      lucide.createIcons({ nodes: [box] });
+      safeRefreshIcons(box);
     }
 
     function setAuthGateTab(tab) {
@@ -715,7 +752,7 @@
     }
 
     async function ensureFirebaseAuth() {
-      if (!auth) return null;
+      if (!auth || !fbModules) return null;
       if (auth.currentUser) {
         firebaseUser = auth.currentUser;
         return firebaseUser;
@@ -727,14 +764,14 @@
         try {
           if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
             try {
-              const cred = await signInWithCustomToken(auth, __initial_auth_token);
+              const cred = await fbModules.signInWithCustomToken(auth, __initial_auth_token);
               firebaseUser = cred.user;
               return firebaseUser;
             } catch (tokenErr) {
               console.warn('Custom token failed, falling back to anonymous:', tokenErr);
             }
           }
-          const cred = await signInAnonymously(auth);
+          const cred = await fbModules.signInAnonymously(auth);
           firebaseUser = cred.user;
           return firebaseUser;
         } finally {
@@ -745,12 +782,15 @@
     }
 
     async function handleAuthGateSubmit(e) {
-      e.preventDefault();
-      const email = document.getElementById('auth-email-input').value.trim().toLowerCase();
-      const password = document.getElementById('auth-pass-input').value;
+      if (e && e.preventDefault) e.preventDefault();
+      const emailEl = document.getElementById('auth-email-input');
+      const passEl = document.getElementById('auth-pass-input');
       const nameInput = document.getElementById('auth-name-input');
-      const displayName = nameInput ? nameInput.value.trim() : '';
       const btn = document.getElementById('auth-submit-btn');
+
+      const email = emailEl ? emailEl.value.trim().toLowerCase() : '';
+      const password = passEl ? passEl.value : '';
+      const displayName = nameInput ? nameInput.value.trim() : '';
 
       if (!email || !password) return;
 
@@ -763,11 +803,11 @@
         const accountKey = 'acc_' + normalizeEmailKey(email);
         const passHash = await hashPassword(password);
 
-        if (db && auth) {
+        if (db && auth && fbModules) {
           const user = await ensureFirebaseAuth();
           if (!user) throw new Error('Autentikasi database gagal.');
           const docRef = getAccountDocRef(accountKey);
-          const snap = await getDoc(docRef);
+          const snap = await fbModules.getDoc(docRef);
 
           if (authModeTab === 'login') {
             if (!snap.exists()) {
@@ -782,6 +822,7 @@
             activeAccount = { type: 'email', accountKey, email };
             const cached = loadLocalStateCache(accountKey);
             appState = mergeWithDefaults(data.state || cached || getDefaultState());
+            saveLocalAccountRecord(accountKey, { email, passwordHash: passHash });
             saveLocalSessionCache();
             updateHeaderUserBadge();
             subscribeToAccountCloudData(accountKey);
@@ -795,7 +836,7 @@
             }
             const initial = getDefaultState();
             initial.profile.name = displayName || email.split('@')[0];
-            await setDoc(docRef, {
+            await fbModules.setDoc(docRef, {
               email,
               passwordHash: passHash,
               state: initial,
@@ -804,6 +845,7 @@
             });
             activeAccount = { type: 'email', accountKey, email };
             appState = initial;
+            saveLocalAccountRecord(accountKey, { email, passwordHash: passHash });
             saveLocalSessionCache();
             updateHeaderUserBadge();
             subscribeToAccountCloudData(accountKey);
@@ -812,20 +854,153 @@
             showToast('Akun berhasil dibuat & tersimpan permanen ₊˚ʚɞ');
           }
         } else {
-          // Offline fallback if Firebase config is unavailable
-          activeAccount = { type: 'email', accountKey, email };
-          const initial = getDefaultState();
-          initial.profile.name = displayName || email.split('@')[0];
-          appState = mergeWithDefaults(loadLocalStateCache(accountKey) || initial);
-          saveLocalSessionCache();
-          updateHeaderUserBadge();
-          hideAuthGate();
-          switchTab('beranda');
-          showToast(`Masuk sebagai ${appState.profile.name} ✧`);
+          // Mode Penyimpanan Lokal (APK / Offline WebView)
+          const existingLocalMeta = loadLocalAccountRecord(accountKey);
+          const existingLocalState = loadLocalStateCache(accountKey);
+
+          if (authModeTab === 'login') {
+            if (!existingLocalMeta && !existingLocalState) {
+              showAuthGate('Email belum terdaftar di perangkat ini. Klik "Daftar Baru" terlebih dahulu.');
+              return;
+            }
+            if (existingLocalMeta && existingLocalMeta.passwordHash && existingLocalMeta.passwordHash !== passHash) {
+              showAuthGate('Kata sandi salah. Silakan periksa kembali kata sandimu.');
+              return;
+            }
+            activeAccount = { type: 'email', accountKey, email };
+            appState = mergeWithDefaults(existingLocalState || getDefaultState());
+            saveLocalSessionCache();
+            setSyncStatus('local');
+            updateHeaderUserBadge();
+            hideAuthGate();
+            switchTab('beranda');
+            showToast(`Selamat datang kembali, ${appState.profile.name}! ⋆˚꩜｡`);
+          } else {
+            if (existingLocalMeta || existingLocalState) {
+              showAuthGate('Email ini sudah terdaftar di perangkat ini. Silakan masuk melalui tab "Masuk Akun".');
+              return;
+            }
+            const initial = getDefaultState();
+            initial.profile.name = displayName || email.split('@')[0];
+            saveLocalAccountRecord(accountKey, { email, passwordHash: passHash });
+            activeAccount = { type: 'email', accountKey, email };
+            appState = initial;
+            saveLocalSessionCache();
+            setSyncStatus('local');
+            updateHeaderUserBadge();
+            hideAuthGate();
+            switchTab('beranda');
+            showToast(`Akun ${appState.profile.name} siap digunakan ₊˚ʚɞ`);
+          }
         }
       } catch (err) {
         console.error('Auth submit error:', err);
         showAuthGate(`Gagal masuk: ${err?.message || 'Periksa koneksi internet dan coba lagi.'}`);
+      }
+    }
+
+    async function handleGuestLogin() {
+      const guestBtn = document.getElementById('guest-login-btn');
+      if (guestBtn) {
+        guestBtn.disabled = true;
+        guestBtn.textContent = 'Membuka Ruang Belajar...';
+      }
+      try {
+        if (db && auth && fbModules) {
+          const user = await ensureFirebaseAuth();
+          if (!user) throw new Error('Autentikasi tamu gagal.');
+          const guestKey = 'guest_' + user.uid;
+          const docRef = getAccountDocRef(guestKey);
+          const snap = await fbModules.getDoc(docRef);
+          if (!snap.exists()) {
+            const initial = getDefaultState();
+            await fbModules.setDoc(docRef, {
+              isGuest: true,
+              state: initial,
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            });
+            appState = initial;
+          } else {
+            appState = mergeWithDefaults(snap.data().state || snap.data());
+          }
+          activeAccount = { type: 'guest', accountKey: guestKey, email: '' };
+          saveLocalSessionCache();
+          updateHeaderUserBadge();
+          subscribeToAccountCloudData(guestKey);
+          hideAuthGate();
+          switchTab('beranda');
+          showToast('Masuk sebagai Tamu ✧');
+        } else {
+          const guestKey = 'guest_local';
+          activeAccount = { type: 'guest', accountKey: guestKey, email: '' };
+          appState = mergeWithDefaults(loadLocalStateCache(guestKey) || getDefaultState());
+          saveLocalSessionCache();
+          setSyncStatus('local');
+          updateHeaderUserBadge();
+          hideAuthGate();
+          switchTab('beranda');
+          showToast('Masuk sebagai Tamu ✧');
+        }
+      } catch (err) {
+        console.error('Guest login error:', err);
+        // Fallback otomatis ke tamu lokal jika jaringan gagal di APK
+        const guestKey = 'guest_local';
+        activeAccount = { type: 'guest', accountKey: guestKey, email: '' };
+        appState = mergeWithDefaults(loadLocalStateCache(guestKey) || getDefaultState());
+        saveLocalSessionCache();
+        setSyncStatus('local');
+        updateHeaderUserBadge();
+        hideAuthGate();
+        switchTab('beranda');
+        showToast('Masuk dalam mode offline APK ✧');
+      }
+    }
+
+    async function initCloudApp() {
+      showAuthGate('');
+
+      if (!firebaseConfig) {
+        setSyncStatus('local');
+        return;
+      }
+
+      try {
+        const [appMod, authMod, fsMod] = await Promise.all([
+          import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js"),
+          import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js"),
+          import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js")
+        ]);
+
+        fbModules = {
+          initializeApp: appMod.initializeApp,
+          getAuth: authMod.getAuth,
+          signInAnonymously: authMod.signInAnonymously,
+          signInWithCustomToken: authMod.signInWithCustomToken,
+          onAuthStateChanged: authMod.onAuthStateChanged,
+          getFirestore: fsMod.getFirestore,
+          doc: fsMod.doc,
+          getDoc: fsMod.getDoc,
+          setDoc: fsMod.setDoc,
+          onSnapshot: fsMod.onSnapshot
+        };
+
+        app = fbModules.initializeApp(firebaseConfig);
+        auth = fbModules.getAuth(app);
+        db = fbModules.getFirestore(app);
+
+        fbModules.onAuthStateChanged(auth, (user) => {
+          firebaseUser = user;
+        });
+
+        ensureFirebaseAuth().catch(() => {});
+      } catch (err) {
+        console.warn('Firebase SDK tidak tersedia di lingkungan APK ini, beralih ke penyimpanan lokal perangkat:', err);
+        fbModules = null;
+        app = null;
+        auth = null;
+        db = null;
+        setSyncStatus('local');
       }
     }
 
@@ -958,28 +1133,39 @@
 
     async function handleUpgradeGuestAccount(e) {
       e.preventDefault();
-      if (!db || !auth) return;
       const email = document.getElementById('link-email-input').value.trim().toLowerCase();
       const pass = document.getElementById('link-pass-input').value;
+      const accountKey = 'acc_' + normalizeEmailKey(email);
+      const passHash = await hashPassword(pass);
+
+      if (!db || !auth || !fbModules) {
+        saveLocalAccountRecord(accountKey, { email, passwordHash: passHash });
+        activeAccount = { type: 'email', accountKey, email };
+        saveLocalSessionCache();
+        updateHeaderUserBadge();
+        closeModal();
+        refreshCurrentView();
+        showToast('Akun berhasil ditautkan di perangkat ini ✧');
+        return;
+      }
 
       try {
         const user = await ensureFirebaseAuth();
         if (!user) throw new Error('Autentikasi gagal');
-        const accountKey = 'acc_' + normalizeEmailKey(email);
         const docRef = getAccountDocRef(accountKey);
-        const snap = await getDoc(docRef);
+        const snap = await fbModules.getDoc(docRef);
         if (snap.exists()) {
           showToast('Email sudah terdaftar. Keluar dulu untuk masuk ke akun tersebut.', 'error');
           return;
         }
-        const passHash = await hashPassword(pass);
-        await setDoc(docRef, {
+        await fbModules.setDoc(docRef, {
           email,
           passwordHash: passHash,
           state: JSON.parse(JSON.stringify(appState)),
           createdAt: Date.now(),
           updatedAt: Date.now()
         });
+        saveLocalAccountRecord(accountKey, { email, passwordHash: passHash });
         activeAccount = { type: 'email', accountKey, email };
         saveLocalSessionCache();
         updateHeaderUserBadge();
@@ -3322,7 +3508,7 @@
 
     window.addEventListener('DOMContentLoaded', () => {
       switchTab('beranda');
-      lucide.createIcons();
+      safeRefreshIcons();
       initCloudApp();
     });
 
