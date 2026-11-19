@@ -450,7 +450,14 @@
 
     // Cloud Initialization
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'my-study-space-default';
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+    let firebaseConfig = null;
+    try {
+      if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+        firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+      }
+    } catch (e) {
+      firebaseConfig = null;
+    }
 
     let app = null;
     let auth = null;
@@ -462,6 +469,7 @@
     let isRemoteUpdating = false;
     let hasLoadedInitialDoc = false;
     let authModeTab = 'login'; // 'login' | 'register'
+    let authInitPromise = null;
 
     let appState = getDefaultState();
     let currentTab = 'beranda';
@@ -501,10 +509,32 @@
       return doc(db, 'artifacts', appId, 'public', 'data', 'study_space_accounts', accountKey);
     }
 
+    function saveLocalSessionCache() {
+      try {
+        if (activeAccount) {
+          localStorage.setItem('mss_active_account_' + appId, JSON.stringify(activeAccount));
+          localStorage.setItem('mss_backup_state_' + activeAccount.accountKey, JSON.stringify(appState));
+        }
+      } catch (e) {}
+    }
+
+    function loadLocalStateCache(accountKey) {
+      try {
+        const raw = localStorage.getItem('mss_backup_state_' + accountKey);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
     async function persistStateToCloudNow() {
-      if (!db || !firebaseUser || !activeAccount || isRemoteUpdating) return;
+      if (!activeAccount || isRemoteUpdating) return;
+      saveLocalSessionCache();
+      if (!db || !auth) return;
       try {
         setSyncStatus('saving');
+        const user = await ensureFirebaseAuth();
+        if (!user) throw new Error('Belum terautentikasi');
         const payload = JSON.parse(JSON.stringify(appState));
         await setDoc(getAccountDocRef(activeAccount.accountKey), {
           state: payload,
@@ -512,13 +542,15 @@
         }, { merge: true });
         setSyncStatus('saved');
       } catch (err) {
+        console.error('Cloud save error:', err);
         setSyncStatus('error');
-        showToast('Gagal menyimpan ke cloud. Periksa ukuran gambar atau koneksi (｡•́︿•̀｡)', 'error');
       }
     }
 
     function saveState(immediate = false) {
-      if (!db || !firebaseUser || !activeAccount) return;
+      if (!activeAccount) return;
+      saveLocalSessionCache();
+      if (!db) return;
       setSyncStatus('saving');
       clearTimeout(saveDebounceTimer);
       if (immediate) {
@@ -530,11 +562,15 @@
       }
     }
 
-    function subscribeToAccountCloudData(accountKey) {
+    async function subscribeToAccountCloudData(accountKey) {
       if (unsubscribeSnapshot) {
         unsubscribeSnapshot();
         unsubscribeSnapshot = null;
       }
+      if (!db || !auth) return;
+      const user = await ensureFirebaseAuth();
+      if (!user) return;
+
       hasLoadedInitialDoc = false;
       const docRef = getAccountDocRef(accountKey);
 
@@ -553,6 +589,7 @@
         const remoteState = remoteDoc.state || remoteDoc;
         isRemoteUpdating = true;
         appState = mergeWithDefaults(remoteState);
+        saveLocalSessionCache();
         isRemoteUpdating = false;
 
         if (!hasLoadedInitialDoc) {
@@ -576,9 +613,9 @@
         }
         setSyncStatus('saved');
       }, (error) => {
+        console.error('Snapshot listener error:', error);
         setSyncStatus('error');
         hideAuthGate();
-        showToast('Koneksi database terganggu (｡•́︿•̀｡)', 'error');
       });
     }
 
@@ -683,24 +720,39 @@
         firebaseUser = auth.currentUser;
         return firebaseUser;
       }
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        const cred = await signInWithCustomToken(auth, __initial_auth_token);
-        firebaseUser = cred.user;
-      } else {
-        const cred = await signInAnonymously(auth);
-        firebaseUser = cred.user;
+      if (authInitPromise) {
+        return authInitPromise;
       }
-      return firebaseUser;
+      authInitPromise = (async () => {
+        try {
+          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            try {
+              const cred = await signInWithCustomToken(auth, __initial_auth_token);
+              firebaseUser = cred.user;
+              return firebaseUser;
+            } catch (tokenErr) {
+              console.warn('Custom token failed, falling back to anonymous:', tokenErr);
+            }
+          }
+          const cred = await signInAnonymously(auth);
+          firebaseUser = cred.user;
+          return firebaseUser;
+        } finally {
+          authInitPromise = null;
+        }
+      })();
+      return authInitPromise;
     }
 
     async function handleAuthGateSubmit(e) {
       e.preventDefault();
-      if (!db || !auth) return;
       const email = document.getElementById('auth-email-input').value.trim().toLowerCase();
       const password = document.getElementById('auth-pass-input').value;
       const nameInput = document.getElementById('auth-name-input');
       const displayName = nameInput ? nameInput.value.trim() : '';
       const btn = document.getElementById('auth-submit-btn');
+
+      if (!email || !password) return;
 
       if (btn) {
         btn.disabled = true;
@@ -708,100 +760,138 @@
       }
 
       try {
-        await ensureFirebaseAuth();
         const accountKey = 'acc_' + normalizeEmailKey(email);
         const passHash = await hashPassword(password);
-        const docRef = getAccountDocRef(accountKey);
-        const snap = await getDoc(docRef);
 
-        if (authModeTab === 'login') {
-          if (!snap.exists()) {
-            showAuthGate('Email belum terdaftar. Silakan klik tab "Daftar Baru" untuk membuat akun.');
-            return;
+        if (db && auth) {
+          const user = await ensureFirebaseAuth();
+          if (!user) throw new Error('Autentikasi database gagal.');
+          const docRef = getAccountDocRef(accountKey);
+          const snap = await getDoc(docRef);
+
+          if (authModeTab === 'login') {
+            if (!snap.exists()) {
+              showAuthGate('Email belum terdaftar. Silakan klik tab "Daftar Baru" untuk membuat akun.');
+              return;
+            }
+            const data = snap.data();
+            if (data.passwordHash && data.passwordHash !== passHash) {
+              showAuthGate('Kata sandi salah. Silakan periksa kembali kata sandimu.');
+              return;
+            }
+            activeAccount = { type: 'email', accountKey, email };
+            const cached = loadLocalStateCache(accountKey);
+            appState = mergeWithDefaults(data.state || cached || getDefaultState());
+            saveLocalSessionCache();
+            updateHeaderUserBadge();
+            subscribeToAccountCloudData(accountKey);
+            hideAuthGate();
+            switchTab('beranda');
+            showToast(`Selamat datang kembali, ${appState.profile.name}! ⋆˚꩜｡`);
+          } else {
+            if (snap.exists()) {
+              showAuthGate('Email ini sudah terdaftar. Silakan masuk melalui tab "Masuk Akun".');
+              return;
+            }
+            const initial = getDefaultState();
+            initial.profile.name = displayName || email.split('@')[0];
+            await setDoc(docRef, {
+              email,
+              passwordHash: passHash,
+              state: initial,
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            });
+            activeAccount = { type: 'email', accountKey, email };
+            appState = initial;
+            saveLocalSessionCache();
+            updateHeaderUserBadge();
+            subscribeToAccountCloudData(accountKey);
+            hideAuthGate();
+            switchTab('beranda');
+            showToast('Akun berhasil dibuat & tersimpan permanen ₊˚ʚɞ');
           }
-          const data = snap.data();
-          if (data.passwordHash !== passHash) {
-            showAuthGate('Kata sandi salah. Silakan periksa kembali kata sandimu.');
-            return;
-          }
-          activeAccount = { type: 'email', accountKey, email };
-          appState = mergeWithDefaults(data.state || data);
-          updateHeaderUserBadge();
-          subscribeToAccountCloudData(accountKey);
-          hideAuthGate();
-          switchTab('beranda');
-          showToast(`Selamat datang kembali, ${appState.profile.name}! ⋆˚꩜｡`);
         } else {
-          if (snap.exists()) {
-            showAuthGate('Email ini sudah terdaftar. Silakan masuk melalui tab "Masuk Akun".');
-            return;
-          }
+          // Offline fallback if Firebase config is unavailable
+          activeAccount = { type: 'email', accountKey, email };
           const initial = getDefaultState();
           initial.profile.name = displayName || email.split('@')[0];
-          await setDoc(docRef, {
-            email,
-            passwordHash: passHash,
-            state: initial,
-            createdAt: Date.now(),
-            updatedAt: Date.now()
-          });
-          activeAccount = { type: 'email', accountKey, email };
-          appState = initial;
+          appState = mergeWithDefaults(loadLocalStateCache(accountKey) || initial);
+          saveLocalSessionCache();
           updateHeaderUserBadge();
-          subscribeToAccountCloudData(accountKey);
           hideAuthGate();
           switchTab('beranda');
-          showToast('Akun berhasil dibuat & tersimpan permanen ₊˚ʚɞ');
+          showToast(`Masuk sebagai ${appState.profile.name} ✧`);
         }
       } catch (err) {
-        showAuthGate('Terjadi kendala koneksi ke database. Silakan coba lagi.');
+        console.error('Auth submit error:', err);
+        showAuthGate(`Gagal masuk: ${err?.message || 'Periksa koneksi internet dan coba lagi.'}`);
       }
     }
 
     async function handleGuestLogin() {
-      if (!db || !auth) return;
       try {
-        const user = await ensureFirebaseAuth();
-        const guestKey = 'guest_' + (user?.uid || crypto.randomUUID());
-        const docRef = getAccountDocRef(guestKey);
-        const snap = await getDoc(docRef);
-        if (!snap.exists()) {
-          const initial = getDefaultState();
-          await setDoc(docRef, {
-            isGuest: true,
-            state: initial,
-            createdAt: Date.now(),
-            updatedAt: Date.now()
-          });
-          appState = initial;
+        if (db && auth) {
+          const user = await ensureFirebaseAuth();
+          if (!user) throw new Error('Autentikasi tamu gagal.');
+          const guestKey = 'guest_' + user.uid;
+          const docRef = getAccountDocRef(guestKey);
+          const snap = await getDoc(docRef);
+          if (!snap.exists()) {
+            const initial = getDefaultState();
+            await setDoc(docRef, {
+              isGuest: true,
+              state: initial,
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            });
+            appState = initial;
+          } else {
+            appState = mergeWithDefaults(snap.data().state || snap.data());
+          }
+          activeAccount = { type: 'guest', accountKey: guestKey, email: '' };
+          saveLocalSessionCache();
+          updateHeaderUserBadge();
+          subscribeToAccountCloudData(guestKey);
+          hideAuthGate();
+          switchTab('beranda');
+          showToast('Masuk sebagai Tamu ✧');
         } else {
-          appState = mergeWithDefaults(snap.data().state || snap.data());
+          const guestKey = 'guest_local';
+          activeAccount = { type: 'guest', accountKey: guestKey, email: '' };
+          appState = mergeWithDefaults(loadLocalStateCache(guestKey) || getDefaultState());
+          saveLocalSessionCache();
+          updateHeaderUserBadge();
+          hideAuthGate();
+          switchTab('beranda');
+          showToast('Masuk sebagai Tamu ✧');
         }
-        activeAccount = { type: 'guest', accountKey: guestKey, email: '' };
-        updateHeaderUserBadge();
-        subscribeToAccountCloudData(guestKey);
-        hideAuthGate();
-        switchTab('beranda');
-        showToast('Masuk sebagai Tamu ✧');
       } catch (err) {
-        showAuthGate('Gagal masuk mode tamu. Silakan coba lagi.');
+        console.error('Guest login error:', err);
+        showAuthGate(`Gagal masuk mode tamu: ${err?.message || 'Coba lagi.'}`);
       }
     }
 
     async function initCloudApp() {
       if (!firebaseConfig) {
-        hideAuthGate();
-        switchTab('beranda');
+        showAuthGate('');
         return;
       }
 
-      app = initializeApp(firebaseConfig);
-      auth = getAuth(app);
-      db = getFirestore(app);
+      try {
+        app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
 
-      onAuthStateChanged(auth, (user) => {
-        firebaseUser = user;
-      });
+        onAuthStateChanged(auth, (user) => {
+          firebaseUser = user;
+        });
+
+        // Pre-authenticate background Firebase session quietly while showing login screen
+        ensureFirebaseAuth().catch(() => {});
+      } catch (err) {
+        console.error('Firebase init error:', err);
+      }
 
       // Selalu tampilkan form Login / Daftar terlebih dahulu agar user mengetik akunnya sendiri
       showAuthGate('');
@@ -868,11 +958,13 @@
 
     async function handleUpgradeGuestAccount(e) {
       e.preventDefault();
-      if (!db || !firebaseUser) return;
+      if (!db || !auth) return;
       const email = document.getElementById('link-email-input').value.trim().toLowerCase();
       const pass = document.getElementById('link-pass-input').value;
 
       try {
+        const user = await ensureFirebaseAuth();
+        if (!user) throw new Error('Autentikasi gagal');
         const accountKey = 'acc_' + normalizeEmailKey(email);
         const docRef = getAccountDocRef(accountKey);
         const snap = await getDoc(docRef);
@@ -889,6 +981,7 @@
           updatedAt: Date.now()
         });
         activeAccount = { type: 'email', accountKey, email };
+        saveLocalSessionCache();
         updateHeaderUserBadge();
         subscribeToAccountCloudData(accountKey);
         closeModal();
@@ -907,6 +1000,7 @@
           unsubscribeSnapshot = null;
         }
         stopTimerLoop();
+        localStorage.removeItem('mss_active_account_' + appId);
         activeAccount = null;
         appState = getDefaultState();
         notesViewState = { selectedSubjectId: null, selectedTopicId: null, searchQuery: '' };
@@ -3231,6 +3325,12 @@
       lucide.createIcons();
       initCloudApp();
     });
-  </script>
 
-<iframe ng-non-bindable="" frameborder="0" hspace="0" marginheight="0" marginwidth="0" scrolling="no" tabindex="-1" vspace="0" width="100%" aria-hidden="true" id="I0_1795097592824" name="I0_1795097592824" src="https://bard-frontend.firebaseapp.com/__/auth/iframe?apiKey=AIzaSyCqyCcs2R2e7AegGjvFAwG98wlamtbHvZY&amp;appName=%5BDEFAULT%5D&amp;v=11.6.1&amp;eid=p&amp;usegapi=1&amp;jsh=m%3B%2F_%2Fscs%2Fabc-static%2F_%2Fjs%2Fk%3Dgapi.lb.en.smUXTMp7CeY.O%2Fd%3D1%2Frs%3DAHpOoo_-UMASGI-dbLvJPxfO6N46l3l46A%2Fm%3D__features__#id=I0_1795097592824&amp;_gfid=I0_1795097592824&amp;parent=blob%3A%2F%2F&amp;pfname=&amp;rpctoken=23112429" style="position: absolute; top: -100px; width: 1px; height: 1px;"></iframe></body></html>```
+    window.addEventListener('beforeunload', () => {
+      if (activeAccount) {
+        saveLocalSessionCache();
+      }
+    });
+  </script>
+</body>
+</html>
