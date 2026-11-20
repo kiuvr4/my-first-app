@@ -558,6 +558,17 @@
       }
     }
 
+    function loadSavedActiveAccount() {
+      try {
+        const raw = localStorage.getItem('mss_active_account_' + appId);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && parsed.accountKey ? parsed : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
     async function persistStateToCloudNow() {
       if (!activeAccount || isRemoteUpdating) return;
       saveLocalSessionCache();
@@ -958,7 +969,26 @@
     }
 
     async function initCloudApp() {
-      showAuthGate('');
+      const savedSession = loadSavedActiveAccount();
+
+      // Jika di perangkat ini sudah pernah masuk (akun email atau tamu) dan belum logout,
+      // langsung muat sesi tersimpan tanpa menampilkan layar login/tamu lagi.
+      if (savedSession) {
+        activeAccount = savedSession;
+        const cachedState = loadLocalStateCache(savedSession.accountKey);
+        if (cachedState) {
+          appState = mergeWithDefaults(cachedState);
+        }
+        updateHeaderUserBadge();
+        hideAuthGate();
+        switchTab('beranda');
+        if (appState.activeTimer.isRunning && appState.activeTimer.subjectId) {
+          startTimerLoop();
+        }
+      } else {
+        // Hanya tampilkan layar masuk/tamu jika pertama kali di perangkat ini atau setelah logout
+        showAuthGate('');
+      }
 
       if (!firebaseConfig) {
         setSyncStatus('local');
@@ -993,7 +1023,11 @@
           firebaseUser = user;
         });
 
-        ensureFirebaseAuth().catch(() => {});
+        await ensureFirebaseAuth().catch(() => {});
+
+        if (savedSession) {
+          subscribeToAccountCloudData(savedSession.accountKey);
+        }
       } catch (err) {
         console.warn('Firebase SDK tidak tersedia di lingkungan APK ini, beralih ke penyimpanan lokal perangkat:', err);
         fbModules = null;
@@ -1002,74 +1036,6 @@
         db = null;
         setSyncStatus('local');
       }
-    }
-
-    async function handleGuestLogin() {
-      try {
-        if (db && auth) {
-          const user = await ensureFirebaseAuth();
-          if (!user) throw new Error('Autentikasi tamu gagal.');
-          const guestKey = 'guest_' + user.uid;
-          const docRef = getAccountDocRef(guestKey);
-          const snap = await getDoc(docRef);
-          if (!snap.exists()) {
-            const initial = getDefaultState();
-            await setDoc(docRef, {
-              isGuest: true,
-              state: initial,
-              createdAt: Date.now(),
-              updatedAt: Date.now()
-            });
-            appState = initial;
-          } else {
-            appState = mergeWithDefaults(snap.data().state || snap.data());
-          }
-          activeAccount = { type: 'guest', accountKey: guestKey, email: '' };
-          saveLocalSessionCache();
-          updateHeaderUserBadge();
-          subscribeToAccountCloudData(guestKey);
-          hideAuthGate();
-          switchTab('beranda');
-          showToast('Masuk sebagai Tamu ✧');
-        } else {
-          const guestKey = 'guest_local';
-          activeAccount = { type: 'guest', accountKey: guestKey, email: '' };
-          appState = mergeWithDefaults(loadLocalStateCache(guestKey) || getDefaultState());
-          saveLocalSessionCache();
-          updateHeaderUserBadge();
-          hideAuthGate();
-          switchTab('beranda');
-          showToast('Masuk sebagai Tamu ✧');
-        }
-      } catch (err) {
-        console.error('Guest login error:', err);
-        showAuthGate(`Gagal masuk mode tamu: ${err?.message || 'Coba lagi.'}`);
-      }
-    }
-
-    async function initCloudApp() {
-      if (!firebaseConfig) {
-        showAuthGate('');
-        return;
-      }
-
-      try {
-        app = initializeApp(firebaseConfig);
-        auth = getAuth(app);
-        db = getFirestore(app);
-
-        onAuthStateChanged(auth, (user) => {
-          firebaseUser = user;
-        });
-
-        // Pre-authenticate background Firebase session quietly while showing login screen
-        ensureFirebaseAuth().catch(() => {});
-      } catch (err) {
-        console.error('Firebase init error:', err);
-      }
-
-      // Selalu tampilkan form Login / Daftar terlebih dahulu agar user mengetik akunnya sendiri
-      showAuthGate('');
     }
 
     /*************************************************************************
