@@ -1392,6 +1392,10 @@
                 </div>
 
                 <div class="flex flex-wrap items-center gap-2">
+                  <button type="button" onclick="confirmResetKisiKisiChecks('${setObj.id}')" class="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-extrabold transition" title="Kosongkan semua centang untuk mengulang belajar">
+                    <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                    <span>Reset Ceklis</span>
+                  </button>
                   <button type="button" onclick="openImportKisiKisiModal('${setObj.id}')" class="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-pinkbrand-50 hover:bg-pinkbrand-100 text-pinkbrand-600 border border-pinkbrand-200 text-xs font-extrabold transition">
                     <i data-lucide="sparkles" class="w-4 h-4"></i>
                     <span>Impor / AI Ekstrak</span>
@@ -1708,30 +1712,87 @@
       const labelEl = document.getElementById('kk-file-label');
       if (labelEl) labelEl.textContent = file.name;
 
-      // Jika file teks/CSV, langsung baca isinya ke kotak teks tanpa butuh API key
-      if (file.type === 'text/plain' || file.type === 'text/csv' || /\.(txt|csv)$/i.test(file.name)) {
-        const reader = new FileReader();
+      const reader = new FileReader();
+      if (file.type === 'text/plain' || file.name.endsWith('.txt') || file.name.endsWith('.csv')) {
         reader.onload = function(evt) {
           const box = document.getElementById('kk-raw-text');
-          if (box) {
-            box.value = evt.target.result || '';
-            previewLiveKisiKisiParse();
-          }
+          if (box) box.value = evt.target.result || '';
           pendingKisiFileBase64 = '';
-          showToast('Teks dari file berhasil dimuat! ✧');
         };
         reader.readAsText(file);
-        return;
+      } else {
+        reader.onload = function(evt) {
+          const dataUrl = evt.target.result || '';
+          const commaIdx = dataUrl.indexOf(',');
+          pendingKisiFileBase64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : '';
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    async function resolveActiveGeminiModels(apiKey) {
+      const preferredOrder = [
+        'gemini-3-flash-preview',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-2.0-flash'
+      ];
+      try {
+        const listResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+        if (listResp.ok) {
+          const listJson = await listResp.json();
+          const available = (listJson.models || [])
+            .filter(m => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+            .map(m => (m.name || '').replace(/^models\//, ''))
+            .filter(name => name.includes('gemini') && name.includes('flash') && !name.includes('tts') && !name.includes('image') && !name.includes('live'));
+
+          if (available.length > 0) {
+            const sorted = [
+              ...preferredOrder.filter(p => available.includes(p)),
+              ...available.filter(a => !preferredOrder.includes(a))
+            ];
+            return sorted;
+          }
+        }
+      } catch (e) {}
+      return preferredOrder;
+    }
+
+    async function callGeminiGenerateContent(apiKey, parts, wantJson = false) {
+      const candidateModels = await resolveActiveGeminiModels(apiKey);
+      let resp = null;
+      let lastErrMsg = '';
+
+      for (const modelName of candidateModels) {
+        const genConfig = { temperature: 0.15 };
+        if (wantJson) genConfig.responseMimeType = 'application/json';
+
+        resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts }],
+            generationConfig: genConfig
+          })
+        });
+
+        if (resp.ok) {
+          const json = await resp.json();
+          const textOut = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          if (textOut) return textOut;
+        }
+
+        const errData = await resp.json().catch(() => ({}));
+        lastErrMsg = errData?.error?.message || `HTTP ${resp.status}`;
+
+        if (resp.status === 404 || resp.status === 400 || /no longer available|not found|not supported|deprecated/i.test(lastErrMsg)) {
+          continue;
+        }
+        break;
       }
 
-      // Jika foto atau PDF, siapkan base64 untuk Gemini API
-      const reader = new FileReader();
-      reader.onload = function(evt) {
-        const dataUrl = evt.target.result || '';
-        const commaIdx = dataUrl.indexOf(',');
-        pendingKisiFileBase64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : '';
-      };
-      reader.readAsDataURL(file);
+      throw new Error(`Gemini AI gagal merespons (${lastErrMsg}). Pastikan API Key valid & aktif.`);
     }
 
     async function extractKisiKisiWithGemini(apiKey, rawText, fileBase64, fileMime) {
@@ -1767,26 +1828,7 @@ ${rawText ? '\nTeks kisi-kisi:\n' + rawText : ''}`
         });
       }
 
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.1
-          }
-        })
-      });
-
-      if (!resp.ok) {
-        const errData = await resp.json().catch(() => ({}));
-        const apiMsg = errData?.error?.message || `HTTP ${resp.status}`;
-        throw new Error(`Gemini AI gagal merespons (${apiMsg}). Pastikan API Key valid & aktif.`);
-      }
-
-      const json = await resp.json();
-      const textOut = json?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+      const textOut = await callGeminiGenerateContent(apiKey, parts, true);
       const cleaned = textOut.replace(/```json|```/gi, '').trim();
       const arr = JSON.parse(cleaned);
       if (!Array.isArray(arr)) throw new Error('Format respons AI tidak sesuai');
@@ -1977,6 +2019,41 @@ ${rawText ? '\nTeks kisi-kisi:\n' + rawText : ''}`
       saveState(true);
       renderKisiKisiView();
       showToast('Kisi-kisi dihapus.');
+    }
+
+    function confirmResetKisiKisiChecks(setId) {
+      const setObj = (appState.kisiKisiSets || []).find(s => s.id === setId);
+      if (!setObj) return;
+      const doneCount = (setObj.items || []).filter(i => i.done).length;
+      if (doneCount === 0) {
+        showToast('Semua centang sudah kosong dan siap dipelajari ⋆˚꩜｡');
+        return;
+      }
+      openModal(`
+        <div class="text-center space-y-3">
+          <div class="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+            <i data-lucide="rotate-ccw" class="w-6 h-6"></i>
+          </div>
+          <h3 class="font-display font-extrabold text-lg text-stone-800">Reset Semua Ceklis Kisi-Kisi? ⋆˚꩜｡</h3>
+          <p class="text-xs text-stone-600 leading-relaxed">
+            Semua tanda <strong>"Sudah Dipelajari"</strong> (${doneCount} nomor soal) pada <strong>${escapeHtml(setObj.subjectName)}</strong> akan dikosongkan kembali tanpa menghapus daftar indikator soalnya.
+          </p>
+          <div class="flex justify-center gap-2 pt-2">
+            <button onclick="closeModal()" class="px-4 py-2.5 rounded-2xl bg-pinkbrand-50 text-pinkbrand-600 font-bold text-xs">Batal</button>
+            <button onclick="executeResetKisiKisiChecks('${setId}')" class="px-5 py-2.5 rounded-2xl bg-pinkbrand-600 hover:bg-pinkbrand-500 text-white font-bold text-xs shadow-pink-sm">Ya, Reset Ceklis</button>
+          </div>
+        </div>
+      `);
+    }
+
+    function executeResetKisiKisiChecks(setId) {
+      const setObj = (appState.kisiKisiSets || []).find(s => s.id === setId);
+      if (!setObj) return;
+      (setObj.items || []).forEach(it => { it.done = false; });
+      saveState(true);
+      closeModal();
+      renderKisiKisiView();
+      showToast('Semua ceklis kisi-kisi berhasil di-reset ke 0%! Selamat mengulang belajar ₊˚ʚɞ');
     }
 
     function openApiKeyModal() {
@@ -2339,57 +2416,113 @@ ${rawText ? '\nTeks kisi-kisi:\n' + rawText : ''}`
                 ${ref ? `Terakhir diisi: ${formatDateIndo(ref.date, false)} (${data.reflectionsCount} refleksi)` : 'Belum ada catatan refleksi belajarmu'}
               </p>
             </div>
-            <button type="button" onclick="openReflectionFormModal()" class="shrink-0 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-pinkbrand-600 hover:bg-pinkbrand-500 text-white text-xs font-extrabold shadow-pink-sm transition">
-              <i data-lucide="pen-line" class="w-3.5 h-3.5"></i>
-              <span>${ref ? 'Tulis Refleksi Baru' : 'Isi Refleksi'}</span>
-            </button>
+            <div class="flex flex-wrap items-center gap-1.5 shrink-0">
+              ${(appState.profile?.geminiApiKey || '').trim() ? `
+                <button type="button" onclick="runAiLearningEvaluator()" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-pinkbrand-100 text-pinkbrand-600 border border-pinkbrand-200 text-xs font-extrabold transition">
+                  <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                  <span>Analisis Gemini AI</span>
+                </button>
+              ` : ''}
+              <button type="button" onclick="openReflectionFormModal()" class="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-pinkbrand-600 hover:bg-pinkbrand-500 text-white text-xs font-extrabold shadow-pink-sm transition">
+                <i data-lucide="pen-line" class="w-3.5 h-3.5"></i>
+                <span>${ref ? 'Tulis Refleksi Baru' : 'Isi Refleksi'}</span>
+              </button>
+            </div>
           </div>
 
-          <!-- 1. Learning Overview -->
-          <section class="p-4 rounded-2xl bg-white border border-pinkbrand-200 space-y-1.5">
-            <h4 class="font-display font-extrabold text-sm text-pinkbrand-600">1. Learning Overview</h4>
-            ${report.overviewFacts.map(line => `<p class="text-xs text-stone-700 leading-relaxed">${escapeHtml(line)}</p>`).join('')}
-          </section>
+          <div id="ai-evaluator-box" class="hidden p-4 rounded-2xl bg-gradient-to-br from-pinkbrand-50 to-white border-2 border-pinkbrand-300 space-y-2"></div>
 
-          <!-- 2. What Went Well -->
-          <section class="p-4 rounded-2xl bg-emerald-50/50 border border-emerald-200 space-y-1.5">
-            <h4 class="font-display font-extrabold text-sm text-emerald-800">2. What Went Well</h4>
-            <ul class="list-disc pl-4 space-y-1 text-xs text-stone-700 leading-relaxed">
-              ${report.wentWell.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
-            </ul>
-          </section>
+          <!-- 6 BAGIAN LAPORAN LEARNING EVALUATOR -->
+          <div class="space-y-3">
+            <div class="p-4 rounded-2xl bg-pinkbrand-50/60 border border-pinkbrand-200 space-y-1.5">
+              <h4 class="font-display font-extrabold text-sm text-pinkbrand-600">1. Learning Overview</h4>
+              ${report.overviewFacts.map(line => `<p class="text-xs text-stone-700 leading-relaxed">${escapeHtml(line)}</p>`).join('')}
+            </div>
 
-          <!-- 3. Areas to Improve -->
-          <section class="p-4 rounded-2xl bg-rose-50/50 border border-rose-200 space-y-1.5">
-            <h4 class="font-display font-extrabold text-sm text-rose-800">3. Areas to Improve</h4>
-            <ul class="list-disc pl-4 space-y-1 text-xs text-stone-700 leading-relaxed">
-              ${report.areasToImprove.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
-            </ul>
-          </section>
+            <div class="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 space-y-1.5">
+              <h4 class="font-display font-extrabold text-sm text-emerald-800">2. What Went Well</h4>
+              <ul class="list-disc pl-4 space-y-1 text-xs text-stone-700 leading-relaxed">
+                ${report.wentWell.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
+              </ul>
+            </div>
 
-          <!-- 4. Learning Insights -->
-          <section class="p-4 rounded-2xl bg-pinkbrand-50/60 border border-pinkbrand-200 space-y-1.5">
-            <h4 class="font-display font-extrabold text-sm text-pinkbrand-600">4. Learning Insights</h4>
-            <ul class="list-disc pl-4 space-y-1 text-xs text-stone-700 leading-relaxed">
-              ${report.insights.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
-            </ul>
-          </section>
+            <div class="p-4 rounded-2xl bg-rose-50/60 border border-rose-200 space-y-1.5">
+              <h4 class="font-display font-extrabold text-sm text-rose-800">3. Areas to Improve</h4>
+              <ul class="list-disc pl-4 space-y-1 text-xs text-stone-700 leading-relaxed">
+                ${report.areasToImprove.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
+              </ul>
+            </div>
 
-          <!-- 5. Your Next Steps -->
-          <section class="p-4 rounded-2xl bg-amber-50/60 border border-amber-200 space-y-1.5">
-            <h4 class="font-display font-extrabold text-sm text-amber-900">5. Your Next Steps</h4>
-            <ol class="list-decimal pl-4 space-y-1 text-xs font-medium text-stone-800 leading-relaxed">
-              ${report.nextSteps.map(step => `<li>${escapeHtml(step)}</li>`).join('')}
-            </ol>
-          </section>
+            <div class="p-4 rounded-2xl bg-amber-50/60 border border-amber-200 space-y-1.5">
+              <h4 class="font-display font-extrabold text-sm text-amber-900">4. Learning Insights</h4>
+              <ul class="list-disc pl-4 space-y-1 text-xs text-stone-700 leading-relaxed">
+                ${report.insights.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
+              </ul>
+            </div>
 
-          <!-- 6. Evaluator's Note -->
-          <section class="p-4 rounded-2xl bg-gradient-to-br from-pinkbrand-600 to-pinkbrand-500 text-white space-y-1">
-            <h4 class="font-display font-extrabold text-xs uppercase tracking-wider opacity-90">6. Evaluator's Note</h4>
-            <p class="text-xs leading-relaxed font-medium">${escapeHtml(report.evaluatorNote)}</p>
-          </section>
+            <div class="p-4 rounded-2xl bg-white border-2 border-pinkbrand-300 space-y-1.5 shadow-pink-sm">
+              <h4 class="font-display font-extrabold text-sm text-pinkbrand-600">5. Your Next Steps</h4>
+              <ol class="list-decimal pl-4 space-y-1.5 text-xs font-semibold text-stone-800 leading-relaxed">
+                ${report.nextSteps.map(step => `<li>${escapeHtml(step)}</li>`).join('')}
+              </ol>
+            </div>
+
+            <div class="p-4 rounded-2xl bg-gradient-to-r from-pinkbrand-600 to-pinkbrand-500 text-white space-y-1 shadow-pink-sm">
+              <h4 class="font-display font-extrabold text-sm">6. Evaluator's Note</h4>
+              <p class="text-xs leading-relaxed text-white/95">${escapeHtml(report.evaluatorNote)}</p>
+            </div>
+          </div>
         </div>
-      `, 'max-w-2xl');
+      `, 'max-w-xl');
+    }
+
+    async function runAiLearningEvaluator() {
+      const apiKey = (appState.profile?.geminiApiKey || '').trim();
+      const box = document.getElementById('ai-evaluator-box');
+      if (!apiKey || !box) return;
+
+      box.classList.remove('hidden');
+      box.innerHTML = `
+        <div class="flex items-center gap-2 text-xs font-extrabold text-pinkbrand-600">
+          <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+          <span>Gemini AI sedang menganalisis pola belajarmu secara objektif...</span>
+        </div>
+      `;
+      safeRefreshIcons(box);
+
+      try {
+        const d = analyzeActualLearningData();
+        const summaryPayload = {
+          mingguIniMenit: Math.round(d.thisWeekSec / 60),
+          mingguLaluMenit: Math.round(d.prevWeekSec / 60),
+          hariAktifMingguIni: d.studyDaysThisWeekCount,
+          streakHari: d.streak,
+          targetHarianMenit: Math.round(d.dailyTargetSec / 60),
+          distribusiMapel: d.studiedSubjects.map(s => ({ mapel: s.name, menit: Math.round(s.sec / 60) })),
+          mapelBelumDipelajari: d.neglectedSubjects,
+          spacedRepetition: { selesai: d.completedReviewsCount, total: d.reviewsTotal, terlewat: d.overdueReviewsCount },
+          errorLog: { total: d.errorLogsTotal, sudahPaham: d.masteredErrorsCount, penyebabTerbanyak: d.topErrorReason },
+          perkembanganNilai: d.subjectGradeTrends,
+          ujianTerdekat: d.upcomingExams.slice(0, 3).map(e => ({ mapel: e.title, tanggal: e.date })),
+          refleksiTerakhir: d.latestReflection
+        };
+
+        const aiText = await callGeminiGenerateContent(apiKey, [{
+          text: `Kamu adalah Learning Evaluator akademik. Berdasarkan data JSON aktual berikut, tulis evaluasi singkat dalam bahasa Indonesia yang hangat, cerdas, objektif, dan tidak mengarang angka apa pun yang tidak ada di data. Susun dalam 6 poin singkat: 1. Learning Overview, 2. What Went Well, 3. Areas to Improve, 4. Learning Insights, 5. Your Next Steps (maksimal 3 tindakan konkret), 6. Evaluator's Note.\n\nData aktual:\n${JSON.stringify(summaryPayload)}`
+        }], false);
+
+        box.innerHTML = `
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-extrabold text-pinkbrand-600 flex items-center gap-1.5">
+              <i data-lucide="sparkles" class="w-4 h-4"></i> Insight Mendalam dari Gemini AI
+            </span>
+          </div>
+          <div class="text-xs text-stone-700 whitespace-pre-line leading-relaxed">${escapeHtml(aiText)}</div>
+        `;
+        safeRefreshIcons(box);
+      } catch (err) {
+        box.innerHTML = `<p class="text-xs font-bold text-rose-600">${escapeHtml(err.message || 'Gagal memuat analisis AI.')}</p>`;
+      }
     }
 
     function openReflectionFormModal() {
@@ -6147,9 +6280,12 @@ ${rawText ? '\nTeks kisi-kisi:\n' + rawText : ''}`
       saveKisiKisiItem,
       deleteKisiKisiItem,
       deleteKisiKisiSet,
+      confirmResetKisiKisiChecks,
+      executeResetKisiKisiChecks,
       openApiKeyModal,
       saveGeminiApiKey,
       openLearningEvaluatorModal,
+      runAiLearningEvaluator,
       openReflectionFormModal,
       saveUserReflection,
       openGoalsModal,
