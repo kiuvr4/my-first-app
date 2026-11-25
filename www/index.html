@@ -1535,14 +1535,15 @@
 
           <div class="p-3.5 rounded-2xl bg-pinkbrand-50/80 border border-pinkbrand-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
             <div class="flex items-center gap-2 text-stone-700">
-              <i data-lucide="key-round" class="w-4 h-4 text-pinkbrand-600 shrink-0"></i>
+              <i data-lucide="sparkles" class="w-4 h-4 text-pinkbrand-600 shrink-0"></i>
               <span>
-                Mode Tempel Teks / File <code>.txt/.csv</code> aktif <strong>tanpa API Key</strong> (otomatis baca Bab, Nomor, Bentuk, Varian &amp; Indikator).
-                ${hasApiKey ? 'Gemini API Key sudah terpasang untuk baca foto/PDF otomatis ✧' : 'Ingin baca langsung dari foto/PDF kisi-kisi? Opsional pasang API Key.'}
+                ${hasApiKey
+                  ? '<strong>Gemini AI Aktif ✓</strong> — Siap menyalin kisi-kisi dari Foto/Screenshot, PDF, maupun teks secara otomatis &amp; rapi.'
+                  : 'Pasang <strong>Gemini API Key</strong> agar AI otomatis menyalin &amp; merapikan kisi-kisi dari Foto, PDF, maupun teks.'}
               </span>
             </div>
             <button onclick="openApiKeyModal()" class="shrink-0 px-3 py-1.5 rounded-xl bg-white hover:bg-pinkbrand-100 text-pinkbrand-600 border border-pinkbrand-200 font-extrabold text-[11px]">
-              ${hasApiKey ? 'Atur API Key ✓' : 'Pasang API Key (Opsional)'}
+              ${hasApiKey ? 'Ganti API Key ✓' : 'Pasang API Key'}
             </button>
           </div>
 
@@ -1620,13 +1621,24 @@
       openModal(`
         <div class="flex items-center justify-between mb-4">
           <div>
-            <h3 class="font-display font-extrabold text-lg text-stone-800">${existingSet ? 'Tambah Soal ke ' + escapeHtml(existingSet.subjectName) : 'Ekstrak Kisi-Kisi Terstruktur ⋆˚꩜｡'}</h3>
-            <p class="text-[11px] text-stone-500">Memisahkan Bab, Nomor Soal, Bentuk Soal, Varian Soal &amp; Indikator</p>
+            <h3 class="font-display font-extrabold text-lg text-stone-800">${existingSet ? 'Tambah Soal ke ' + escapeHtml(existingSet.subjectName) : 'Ekstrak Kisi-Kisi dengan Gemini AI ✦'}</h3>
+            <p class="text-[11px] text-stone-500">AI akan merapikan Bab, Nomor Soal, Bentuk Soal, Varian Soal &amp; Indikator secara akurat</p>
           </div>
           <button onclick="closeModal()" class="p-1.5 rounded-xl bg-pinkbrand-50 text-pinkbrand-600"><i data-lucide="x" class="w-4 h-4"></i></button>
         </div>
 
         <form onsubmit="processKisiKisiImport(event, '${existingSetId}')" class="space-y-3.5">
+          ${!hasApiKey ? `
+            <div class="p-3.5 rounded-2xl bg-amber-50 border border-amber-300 space-y-2">
+              <div class="flex items-center gap-1.5 text-xs font-extrabold text-amber-900">
+                <i data-lucide="key-round" class="w-4 h-4 text-amber-700"></i>
+                <span>Masukkan Gemini API Key terlebih dahulu</span>
+              </div>
+              <input id="kk-inline-api-key" type="password" placeholder="Tempel Gemini API Key di sini (AIzaSy...)" required class="w-full px-3.5 py-2 rounded-xl bg-white border border-amber-300 font-mono text-xs text-stone-800 outline-none focus:border-pinkbrand-500">
+              <p class="text-[10px] text-amber-800">API Key otomatis disimpan di perangkatmu untuk pemakaian berikutnya.</p>
+            </div>
+          ` : ''}
+
           ${!existingSet ? `
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
@@ -1645,9 +1657,9 @@
 
           <div class="p-3.5 rounded-2xl bg-pinkbrand-50/70 border border-pinkbrand-200 space-y-2">
             <div class="flex items-center justify-between">
-              <span class="text-xs font-extrabold text-pinkbrand-600">1. Unggah File Kisi-Kisi (Foto / PDF / TXT / CSV)</span>
-              <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${hasApiKey ? 'bg-emerald-100 text-emerald-700' : 'bg-white text-pinkbrand-600 border border-pinkbrand-200'}">
-                ${hasApiKey ? 'AI Aktif ✓' : 'TXT/CSV Tanpa API Key'}
+              <span class="text-xs font-extrabold text-pinkbrand-600">1. Unggah File Kisi-Kisi (Foto / Screenshot / PDF / TXT)</span>
+              <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                Gemini AI ✧
               </span>
             </div>
             <div class="flex items-center gap-2">
@@ -1661,23 +1673,20 @@
 
           <div>
             <div class="flex items-center justify-between mb-1">
-              <label class="text-xs font-bold text-stone-700">2. Tempel Teks Kisi-Kisi Langsung di Sini (Otomatis Diproses Aplikasi)</label>
-              <button type="button" onclick="fillSampleKisiKisiText()" class="text-[11px] font-bold text-pinkbrand-600 hover:underline">Lihat Contoh Format</button>
+              <label class="text-xs font-bold text-stone-700">2. Atau Tempel Teks Kisi-Kisi di Sini</label>
+              <button type="button" onclick="fillSampleKisiKisiText()" class="text-[11px] font-bold text-pinkbrand-600 hover:underline">Contoh Format</button>
             </div>
-            <textarea id="kk-raw-text" rows="6" oninput="previewLiveKisiKisiParse()" placeholder="Copy-paste langsung teks kisi-kisi dari PDF / Word / WA di sini. Aplikasi akan otomatis memisahkan Bab, Nomor Soal, Bentuk Soal, Varian Soal, dan Indikator Soal..." class="w-full px-3.5 py-2.5 rounded-2xl bg-pinkbrand-50 border border-pinkbrand-200 text-xs text-stone-800 outline-none focus:border-pinkbrand-500"></textarea>
-            <div id="kk-live-preview-badge" class="mt-1.5 text-[11px] px-2.5 py-1.5 rounded-xl bg-pinkbrand-50/70 border border-pinkbrand-100">
-              <span class="text-stone-400">Ketik atau tempel teks kisi-kisi untuk melihat deteksi otomatis...</span>
-            </div>
+            <textarea id="kk-raw-text" rows="5" placeholder="Copy-paste teks kisi-kisi dari PDF / Word / WA di sini (atau unggah file di atas), lalu biarkan Gemini AI menyalin dan merapikannya..." class="w-full px-3.5 py-2.5 rounded-2xl bg-pinkbrand-50 border border-pinkbrand-200 text-xs text-stone-800 outline-none focus:border-pinkbrand-500"></textarea>
           </div>
 
-          <div id="kk-import-loading" class="hidden items-center justify-center gap-2 py-2 text-xs font-bold text-pinkbrand-600">
+          <div id="kk-import-loading" class="hidden items-center justify-center gap-2 py-2.5 px-3 rounded-2xl bg-pinkbrand-100 text-xs font-extrabold text-pinkbrand-600">
             <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
-            <span>Sedang menyalin nomor, bentuk, varian &amp; indikator soal...</span>
+            <span>Gemini AI sedang membaca &amp; merapikan kisi-kisi...</span>
           </div>
 
           <div class="flex justify-end gap-2 pt-1">
             <button type="button" onclick="closeModal()" class="px-4 py-2.5 rounded-2xl bg-pinkbrand-50 text-pinkbrand-600 font-bold text-xs">Batal</button>
-            <button type="submit" class="px-5 py-2.5 rounded-2xl bg-pinkbrand-600 hover:bg-pinkbrand-500 text-white font-bold text-xs shadow-pink-sm">Ekstrak Kisi-Kisi ✧</button>
+            <button type="submit" class="px-5 py-2.5 rounded-2xl bg-pinkbrand-600 hover:bg-pinkbrand-500 text-white font-bold text-xs shadow-pink-sm">Salin dengan AI ✧</button>
           </div>
         </form>
       `, 'max-w-lg');
@@ -1728,10 +1737,24 @@
     async function extractKisiKisiWithGemini(apiKey, rawText, fileBase64, fileMime) {
       const parts = [
         {
-          text: `Ekstrak semua daftar kisi-kisi ujian dari dokumen/teks berikut menjadi JSON array murni tanpa markdown atau penjelasan tambahan. Salin persis sesuai teks aslinya (jangan meringkas atau mengubah redaksi kalimat indikator maupun varian soal).
-Format setiap objek wajib:
-{"section": "nama bab/bagian persis seperti di dokumen (misal A. BARISAN DAN DERET), atau string kosong", "number": "nomor soal (misal 1 atau 1-3)", "questionType": "bentuk soal persis (misal Pilihan Ganda, Pilihan Ganda Kompleks, Benar Salah, Isian, atau Uraian)", "variant": "varian soal persis seperti di dokumen jika ada", "indicator": "bunyi indikator soal persis seperti di dokumen"}
-${rawText ? '\nTeks tambahan:\n' + rawText : ''}`
+          text: `Kamu adalah asisten akademik yang bertugas menyalin kisi-kisi ujian menjadi daftar terstruktur yang rapi dan akurat.
+Ekstrak SEMUA item kisi-kisi dari dokumen/teks yang diberikan menjadi JSON array murni (tanpa blok markdown \`\`\`json atau komentar apa pun).
+
+ATURAN KETAT:
+1. Perhatikan nomor soal sebenarnya dari setiap soal (misal "Nomor Soal 1", "Nomor Soal 2", ..., "Nomor Soal 30", atau rentang seperti "1-5"). Jangan mengulang nomor menjadi 1 semua!
+2. Salin persis bunyi indikator soal dan varian soal sesuai teks aslinya tanpa meringkas atau mengubah maknanya.
+3. Kelompokkan ke dalam "section" jika dokumen memiliki bab/bagian (contoh: "A. BARISAN DAN DERET", "B. FUNGSI KOMPOSISI DAN INVERS"). Jika tidak ada bab, isi "".
+4. Tentukan "questionType" sesuai dokumen (misal: "Pilihan Ganda", "Pilihan Ganda Kompleks", "Benar Salah", "Isian", atau "Uraian").
+
+Format wajib setiap objek dalam array:
+{
+  "section": "nama bab/bagian atau string kosong",
+  "number": "nomor soal sebenarnya dari dokumen",
+  "questionType": "bentuk soal",
+  "variant": "varian soal jika ada, atau string kosong",
+  "indicator": "bunyi lengkap indikator soal"
+}
+${rawText ? '\nTeks kisi-kisi:\n' + rawText : ''}`
         }
       ];
 
@@ -1750,13 +1773,16 @@ ${rawText ? '\nTeks tambahan:\n' + rawText : ''}`
         body: JSON.stringify({
           contents: [{ parts }],
           generationConfig: {
-            responseMimeType: 'application/json'
+            responseMimeType: 'application/json',
+            temperature: 0.1
           }
         })
       });
 
       if (!resp.ok) {
-        throw new Error('Gagal menghubungi AI. Periksa API Key atau koneksi internetmu.');
+        const errData = await resp.json().catch(() => ({}));
+        const apiMsg = errData?.error?.message || `HTTP ${resp.status}`;
+        throw new Error(`Gemini AI gagal merespons (${apiMsg}). Pastikan API Key valid & aktif.`);
       }
 
       const json = await resp.json();
@@ -1768,7 +1794,7 @@ ${rawText ? '\nTeks tambahan:\n' + rawText : ''}`
       return arr.map((row, idx) => ({
         id: 'kk_ai_' + Date.now() + '_' + idx + '_' + Math.random().toString(36).slice(2, 5),
         section: String(row.section || '').trim(),
-        number: String(row.number || (idx + 1)),
+        number: String(row.number || (idx + 1)).trim(),
         questionType: String(row.questionType || 'Pilihan Ganda').trim(),
         variant: String(row.variant || '').trim(),
         indicator: String(row.indicator || '').trim(),
@@ -1779,16 +1805,21 @@ ${rawText ? '\nTeks tambahan:\n' + rawText : ''}`
     async function processKisiKisiImport(e, existingSetId) {
       e.preventDefault();
       const rawText = (document.getElementById('kk-raw-text')?.value || '').trim();
+      const inlineKeyInput = document.getElementById('kk-inline-api-key');
+      if (inlineKeyInput && inlineKeyInput.value.trim()) {
+        appState.profile.geminiApiKey = inlineKeyInput.value.trim();
+        saveState();
+      }
       const apiKey = (appState.profile?.geminiApiKey || '').trim();
       const loadingEl = document.getElementById('kk-import-loading');
 
-      if (!rawText && !pendingKisiFileBase64) {
-        showToast('Tempel teks kisi-kisi atau pilih file terlebih dahulu ya ⋆˚꩜｡', 'error');
+      if (!apiKey) {
+        showToast('Masukkan Gemini API Key terlebih dahulu ya ⋆˚꩜｡', 'error');
         return;
       }
 
-      if (pendingKisiFileBase64 && !apiKey) {
-        showToast('Untuk membaca Foto/PDF otomatis, pasang Gemini API Key dulu ya—atau copy-paste teksnya langsung di kotak bawah (gratis tanpa API Key)!', 'error');
+      if (!rawText && !pendingKisiFileBase64) {
+        showToast('Unggah file kisi-kisi atau tempel teksnya terlebih dahulu ya ⋆˚꩜｡', 'error');
         return;
       }
 
@@ -1799,25 +1830,17 @@ ${rawText ? '\nTeks tambahan:\n' + rawText : ''}`
           loadingEl.classList.add('flex');
         }
 
-        if (apiKey && (pendingKisiFileBase64 || rawText)) {
-          extractedItems = await extractKisiKisiWithGemini(apiKey, rawText, pendingKisiFileBase64, pendingKisiFileMime);
-        } else {
-          extractedItems = parseKisiKisiTextLocally(rawText);
-        }
+        extractedItems = await extractKisiKisiWithGemini(apiKey, rawText, pendingKisiFileBase64, pendingKisiFileMime);
       } catch (err) {
-        if (rawText) {
-          extractedItems = parseKisiKisiTextLocally(rawText);
-        } else {
-          if (loadingEl) loadingEl.classList.add('hidden');
-          showToast(err.message || 'Gagal memproses file kisi-kisi.', 'error');
-          return;
-        }
+        if (loadingEl) loadingEl.classList.add('hidden');
+        showToast(err.message || 'Gagal memproses kisi-kisi dengan Gemini AI.', 'error');
+        return;
       } finally {
         if (loadingEl) loadingEl.classList.add('hidden');
       }
 
       if (extractedItems.length === 0) {
-        showToast('Tidak ada indikator soal yang terbaca. Coba periksa format teksnya.', 'error');
+        showToast('AI tidak menemukan butir kisi-kisi pada file/teks tersebut.', 'error');
         return;
       }
 
@@ -1846,7 +1869,7 @@ ${rawText ? '\nTeks tambahan:\n' + rawText : ''}`
       saveState(true);
       closeModal();
       renderKisiKisiView();
-      showToast(`${extractedItems.length} nomor soal kisi-kisi berhasil disalin! ₊˚ʚɞ`);
+      showToast(`Gemini AI berhasil menyalin ${extractedItems.length} butir kisi-kisi! ₊˚ʚɞ`);
     }
 
     function toggleKisiKisiItemDone(setId, itemId) {
